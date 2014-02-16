@@ -1,0 +1,1 @@
+cmd_arch/powerpc/boot/simpleImage.virtex440-ll-accel-int := /bin/sh /tools/dev/repos/linux-2.6-xlnx/arch/powerpc/boot/wrapper -c -o arch/powerpc/boot/simpleImage.virtex440-ll-accel-int -p simpleboot-virtex440-ll-accel-int -C "ppc_4xx-"  -d arch/powerpc/boot/virtex440-ll-accel-int.dtb vmlinux

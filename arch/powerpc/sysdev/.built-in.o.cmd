@@ -1,0 +1,1 @@
+cmd_arch/powerpc/sysdev/built-in.o :=  ppc_4xx-ld -m elf32ppc    -r -o arch/powerpc/sysdev/built-in.o arch/powerpc/sysdev/dcr-low.o arch/powerpc/sysdev/indirect_pci.o arch/powerpc/sysdev/uic.o arch/powerpc/sysdev/ppc4xx_soc.o arch/powerpc/sysdev/xilinx_intc.o arch/powerpc/sysdev/ppc4xx_pci.o arch/powerpc/sysdev/dcr.o 

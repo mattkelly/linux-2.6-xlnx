@@ -1,0 +1,1 @@
+cmd_drivers/net/built-in.o :=  ppc_4xx-ld -m elf32ppc    -r -o drivers/net/built-in.o drivers/net/mii.o drivers/net/Space.o drivers/net/loopback.o drivers/net/wireless/built-in.o drivers/net/xilinx_lltemac/built-in.o 

@@ -1,0 +1,87 @@
+/*****************************************************************************
+ *
+ *     Author: Nick Palladino
+ *
+ *     This program is free software; you can redistribute it and/or modify it
+ *     under the terms of the GNU General Public License as published by the
+ *     Free Software Foundation; either version 2 of the License, or (at your
+ *     option) any later version.
+ *
+ *     You should have received a copy of the GNU General Public License along
+ *     with this program; if not, write to the Free Software Foundation, Inc.,
+ *     675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *****************************************************************************/
+#include <linux/cdev.h>
+#include <linux/fs.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
+
+/*****************************************************************************
+ * Open Firmware Stuff
+ *****************************************************************************/
+
+// Device ID table:
+// Used to match devices to driver. Device analog specified in .DTS file
+
+static struct of_device_id ll_accel_of_match[] = {
+  { .compatible = "xlnx,ll-accel-1.00.a", },
+  { /* end of list */ },
+};
+
+// Register match table with device
+MODULE_DEVICE_TABLE(of, ll_accel_of_match);
+
+// Driver specification structure:
+// Ties probe and remove functions to driver operation
+
+static struct of_platform_driver ll_accel_of_driver = {
+  .owner        = THIS_MODULE,
+  .name					= DRIVER_NAME,
+  .match_table	= ll_accel_of_match,
+  .probe				= ll_accel_of_probe,
+  .remove				= __devexit_p(ll_accel_of_remove),
+};
+
+// Probe
+//
+
+static int __devinit 
+ll_accel_of_probe(struct of_device *op, const struct of_device_id *match)
+{
+
+
+}
+
+// Remove 
+//
+
+static int __devexit ll_accel_of_remove(struct of_device *dev)
+{
+    //ll_accel_remove();
+    return 0;
+}
+
+
+/*****************************************************************************
+ * Driver Entry Point
+ *****************************************************************************/
+
+static int __init ll_accel_init(void)
+{
+    int status;
+    status = of_register_platform_driver(&ll_accel_of_driver);
+    return status;
+}
+
+static void __exit ll_accel_cleanup(void)
+{
+    of_unregister_platform_driver(&ll_accel_of_driver);
+}
+
+module_init(ll_accel_init);
+module_exit(ll_accel_cleanup);
+
+MODULE_AUTHOR("Nick Palladino");
+MODULE_DESCRIPTION("LocalLink DMA/Partial Dynamic Reconfiguration Framework");
+MODULE_LICENSE("GPL");

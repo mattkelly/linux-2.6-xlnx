@@ -1,0 +1,1 @@
+cmd_drivers/char/xilinx_hwicap/xilinx_hwicap_m.o := ppc_4xx-ld -m elf32ppc    -r -o drivers/char/xilinx_hwicap/xilinx_hwicap_m.o drivers/char/xilinx_hwicap/xilinx_hwicap.o drivers/char/xilinx_hwicap/fifo_icap.o drivers/char/xilinx_hwicap/buffer_icap.o 

@@ -1,0 +1,1 @@
+cmd_drivers/input/built-in.o :=  ppc_4xx-ld -m elf32ppc    -r -o drivers/input/built-in.o drivers/input/input-core.o drivers/input/mousedev.o drivers/input/keyboard/built-in.o drivers/input/mouse/built-in.o 

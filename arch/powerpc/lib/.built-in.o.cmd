@@ -1,0 +1,1 @@
+cmd_arch/powerpc/lib/built-in.o :=  ppc_4xx-ld -m elf32ppc    -r -o arch/powerpc/lib/built-in.o arch/powerpc/lib/string.o arch/powerpc/lib/alloc.o arch/powerpc/lib/checksum_32.o arch/powerpc/lib/div64.o arch/powerpc/lib/copy_32.o arch/powerpc/lib/crtsavres.o arch/powerpc/lib/devres.o arch/powerpc/lib/code-patching.o arch/powerpc/lib/feature-fixups.o 

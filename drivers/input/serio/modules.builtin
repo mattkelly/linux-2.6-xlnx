@@ -1,0 +1,4 @@
+kernel/drivers/input/serio/serio.ko
+kernel/drivers/input/serio/libps2.ko
+kernel/drivers/input/serio/xilinx_ps2.ko
+kernel/drivers/input/serio/xilinx_ps2.ko

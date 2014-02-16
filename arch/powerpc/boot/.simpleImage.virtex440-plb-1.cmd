@@ -1,0 +1,1 @@
+cmd_arch/powerpc/boot/simpleImage.virtex440-plb-1 := /bin/sh /home/nlp3276/git/linux-2.6-xlnx/arch/powerpc/boot/wrapper -c -o arch/powerpc/boot/simpleImage.virtex440-plb-1 -p simpleboot-virtex440-plb-1 -C "ppc_4xx-"  -d arch/powerpc/boot/virtex440-plb-1.dtb vmlinux

@@ -1,0 +1,1 @@
+cmd_arch/powerpc/platforms/44x/built-in.o :=  ppc_4xx-ld -m elf32ppc    -r -o arch/powerpc/platforms/44x/built-in.o arch/powerpc/platforms/44x/misc_44x.o arch/powerpc/platforms/44x/idle.o arch/powerpc/platforms/44x/virtex.o 

@@ -1,0 +1,599 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+// File: fifo_driver.c
+// Modified: Nick Palladino
+// Author: Jeremy Espenshade
+// Date: April 29, 2009													
+//																
+// Description: Header for generic FIFO driver enabling 
+//		interaction with custom hardware				
+//              accelerators. Some includes may be			
+//              extraneous. See fifo_driver.c for				
+//		detailed function descriptions.					
+//
+// License: GPL	
+///////////////////////////////////////////////////////////////////////////////
+
+#include "fifo_driver.h"
+
+#define FIFO
+
+#ifdef FIFO
+	#define FIFO_READ_TOTAL   0
+	#define FIFO_MEM2ACC      1
+	#define FIFO_ACC2MEM      2
+	#define FIFO_K2U          3
+	#define FIFO_U2K          4
+	#define FIFO_WRITE_TOTAL  5  /* Time spent on full execution */
+	#define FIFO_ACCEL_EXEC		6
+	#define FIFO_SIZE         7
+	uint32_t fifo_tb_data[FIFO_SIZE];
+#endif
+
+
+////
+// File Operations Structure:
+// Provides system->kernel call mappings
+////
+struct file_operations fifo_fops = { 
+  owner:   THIS_MODULE,
+  read:    fifo_read,
+  write:   fifo_write,
+  open:    fifo_open,
+  release: fifo_release
+};
+
+////
+// Local Data Structure: 
+// Stores physical address pointers and device-specific data values
+////
+struct fifo_dev {
+  struct cdev cdev;					// internal device representation
+  void *base_addr;					// virtual base address of hardware accelerator
+  void *wrfifo_data_addr;				// virtual address of Write FIFO data register
+  void *rdfifo_data_addr;				// virtual address of Read FIFO data register
+  void *wrfifo_rst_addr;				// virtual address of Write FIFO reset register
+  void *rdfifo_rst_addr;				// virtual address of Read FIFO reset register
+  int virq;						// virtual IRQ line
+  wait_queue_head_t wait_queue; // Wait Queue for sleeping on interrupts
+  int read_ready;		// Ready flag for interrupts
+  struct semaphore file_lock;   // lock for device arbitration
+};
+
+
+unsigned long fifo_tx_cycles, fifo_rx_cycles;
+unsigned long 
+
+////
+// @name	fifo_of_probe
+// @description Initialization function used to register the character driver,
+//              map physical to virtual memory, map physical to virtual IRQ,
+//		create wait queue, and unlock arbitration mutex lock.
+// @param	op - structure representing device invoking this function
+// @param	match - ID used to match device to this driver
+// @return	completion status (successful ? 0 : non-zero error code)
+////
+static int __devinit 
+fifo_of_probe(struct of_device *op, const struct of_device_id *match)
+{
+  
+  // Variable Declaration
+  int result;
+  const u32 * dr;
+  unsigned int ds;
+  unsigned base, length;
+  dev_t devno;
+  char name [64];
+  struct fifo_dev *my_dev;
+  struct resource resource;
+  int fifo_major = 0;
+  int fifo_minor = 0;
+
+  // Boot-time status message
+  printk("Probing a FIFO HW Unit\n");
+
+	//printk("Match: Name = %s\n", match->name);
+	//printk("Type: Type = %s\n", match->type);
+	//printk("Compat: Compat = %s\n", match->compatible);
+
+/*
+	printk("Name: %s\n", op->node->name);
+	printk("Type: %s\n", op->node->type);
+	printk("Full Name: %s\n", op->node->full_name);
+
+	printk("Parent Name: %s\n", op->node->parent->name);
+	printk("Parent Type: %s\n", op->node->parent->type);
+	printk("Parent Full Name: %s\n", op->node->parent->full_name);
+*/
+
+  // Allocate kernel space for local data structure
+  my_dev = (struct fifo_dev *)kmalloc(sizeof(struct fifo_dev), GFP_KERNEL);
+  
+  // Write status to log
+  dev_dbg(&op->dev, "xilinxfb_of_probe(%p, %p)\n", op, match);
+	
+  // Retrieve base physical address and region length
+  dr = of_get_property(op->node, "reg", &ds);
+  base = dr[0];
+  length = dr[1];
+
+  // Construct name with "user-" prefix for ease of identification
+  sprintf(name, "user-%s", op->node->name);
+
+  // Register character driver at dynamic major number
+  result = alloc_chrdev_region(&devno, 0, 1, name);	
+  fifo_major = MAJOR(devno);
+  if (result < 0) { 
+    printk("<1>fifo: cannot obtain major number %d\n", fifo_major); 
+    return result; 
+  } 
+  
+  // Initialize device representation with file operations and device numbers
+  cdev_init(&(my_dev->cdev), &fifo_fops);
+  my_dev->cdev.ops = &fifo_fops;
+  my_dev->cdev.owner = THIS_MODULE,
+  result = cdev_add(&(my_dev->cdev),devno,1);
+  if(result < 0){
+    printk("<1>fifo: cannot add cdev\n");
+    kfree(my_dev);
+    return result; 
+  }
+  printk("\tSuccessfully Registered Character Driver\n"); 
+  
+  // Attempt to reserve memory region
+  if(!request_mem_region(base, length, DRIVER_NAME)){
+    // Unable to reserve memory
+    printk("<1>FIFO Dev: cannot reserve %X to %X\n", 
+	   base, base + length); 
+    unregister_chrdev_region(devno, 1);
+    kfree(my_dev);
+    return -ENXIO;
+  }
+  
+  // Map Physical Address into Virtual address Space
+  my_dev->base_addr = ioremap(base,length);
+  if(my_dev->base_addr == NULL){
+    // Unsuccessful
+    printk("<1>FIFO %d: cannot remap physical to virtual memory\n", 
+		   fifo_major);
+    // Cleanup
+    release_mem_region(base,length);
+    unregister_chrdev_region(devno, 1);
+    kfree(my_dev);
+    return -ENOMEM;
+  }
+
+  // Store offset addresses for convenience 
+  my_dev->rdfifo_rst_addr = my_dev->base_addr + RDFIFO_RST_OFFSET;
+  my_dev->rdfifo_data_addr = my_dev->base_addr + RDFIFO_DATA_OFFSET;
+  my_dev->wrfifo_rst_addr = my_dev->base_addr + WRFIFO_RST_OFFSET;
+  my_dev->wrfifo_data_addr = my_dev->base_addr + WRFIFO_DATA_OFFSET;
+
+  // Initialize Wait Queue and read_ready flags for interrupt operation
+  init_waitqueue_head(&(my_dev->wait_queue));
+  my_dev->read_ready = 0;
+
+  // Map physical to virtual IRQ if available
+  my_dev->virq = of_irq_to_resource(op->node, 0, &resource);
+  if(my_dev->virq == NO_IRQ){
+    printk("INFO: No Interrupts\n");
+  }
+  else{
+    printk("\tIRQ successfully mapped to %d\n", my_dev->virq);
+  }
+
+  // Initialize mutex lock in unlocked position
+  init_MUTEX(&(my_dev->file_lock));
+  
+  printk("\tSuccessfully Reserved and Remapped Memory\n"); 	  
+  return 0;
+}
+
+////
+// @name		fifo_open
+// @description Open file operation behavior including lock-based arbitration,
+// FIFO and hardware accelerator resetting, and interrupt enablement if 
+// used by the hardware accelerator.
+// @param		inode - contains device information and cdev in inode->cdev
+// @param		filp - contains filp->private_data field for local data storage
+// @return	completion status (successful ? 0 : non-zero error code)
+////
+int fifo_open(struct inode *inode, struct file *filp){
+  
+  // variable initialization
+  unsigned buffer;
+  struct fifo_dev *my_dev;
+  int result;
+  
+  // Boot-time status
+  printk("Opening FIFO\n");
+  
+	// Get fifo_dev structure from member cdev
+  my_dev = container_of(inode->i_cdev, struct fifo_dev, cdev);
+ 
+	// Try to lock mutex, (successful ? continue : return busy)
+  if(down_trylock(&(my_dev->file_lock))){
+    printk("Device already associated with another process.\n");
+    return -EBUSY;
+  }
+  
+	// store local private data for future use
+  filp->private_data = my_dev;
+
+  //printk("About to Reset\n");
+
+  // reset hardware accelerator and FIFOs
+
+  buffer = swab32(RESET_MASK); // 0x0A000000
+  iowrite32(buffer, (my_dev->base_addr + SOFT_RST_OFFSET));
+  iowrite32(buffer, my_dev->wrfifo_rst_addr); 
+  iowrite32(buffer, my_dev->rdfifo_rst_addr);
+
+/*
+	out_be32(my_dev->base_addr, 10);
+  out_be32(my_dev->base_addr + 0x04, 10);
+	
+	result = in_be32(my_dev->base_addr);
+
+	printk("Result1 = %d\n", result);
+
+	out_be32(my_dev->base_addr + 0x08, 5);
+  out_be32(my_dev->base_addr + 0x0c, 5);
+	
+	result = in_be32(my_dev->base_addr + 0x08);
+
+	printk("Result2 = %d\n", result);
+*/
+  //printk("Reset FIFO Done\n");
+
+  // IRQ handler request if interrupts used
+  if(my_dev->virq != NO_IRQ){
+    result = request_irq(my_dev->virq, fifo_irq_handler,0,DRIVER_NAME, my_dev);
+		// If result != 0, failed to get access to interrupt line
+    if(result){
+      printk(KERN_INFO "short: can't get assigned irq %d\n", my_dev->virq);
+    }
+		// otherwise enable interrupts in hardware
+    else{
+      enable_interrupts(my_dev->base_addr);
+    }
+  }
+
+  //printk("Open Done\n");
+
+  return 0;
+}
+
+////
+// @name		enable_interrupts
+// @description Interfaces with interrupt logic in hardware to turn on 
+//              interrupt generation.
+// @param		base_addr - base virtual address of hardware from which offsets can
+//                      be used
+////
+void enable_interrupts(void* base_addr){
+  unsigned buffer;
+  
+  // clear FIFO device and IP interrupts
+  buffer = ioread32(base_addr + INTR_IPISR_OFFSET);
+  iowrite32(buffer, base_addr + INTR_IPISR_OFFSET);
+  buffer = ioread32(base_addr + INTR_DISR_OFFSET);
+  iowrite32(buffer, base_addr + INTR_DISR_OFFSET);
+  
+  // enable all interrupts
+  buffer = swab32(0x00000001); //was 1, mult 0xFF
+  iowrite32(buffer, base_addr + INTR_IPIER_OFFSET);
+  buffer = swab32(0x00000067);
+  iowrite32(buffer, base_addr + INTR_DIER_OFFSET);
+  buffer = swab32(0x80000000);
+  iowrite32(buffer, base_addr + INTR_DGIER_OFFSET);  
+  
+}
+
+////
+// @name		fifo_irq_handler
+// @description Interrupt handler registered with IRQ line when applicable. 
+//              Called when interrupt arrives. Wakes up wait queue and sets
+//							ready flag.
+// @param		irq - Interrupt request line number
+// @param   dev_id - device local data structure
+// @param		pt_regs - irrelevant structure
+// @return	completion status handled if not interrupted by other kernel ops
+////
+irqreturn_t fifo_irq_handler(int irq, void *dev_id, struct pt_regs *regs){
+  // get local data
+	struct fifo_dev *my_dev = dev_id;
+	//printk("GOT Interrupt from HW\n");
+	//unsigned int status = in_be32(my_dev->base_addr + INTR_DISR_OFFSET);
+  //unsigned int status = in_be32(my_dev->base_addr + INTR_IPISR_OFFSET);
+	//printk("Status Register = 0x%x\n", status);
+  //out_be32(my_dev->base_addr + INTR_IPISR_OFFSET, status);
+
+	// set ready flag
+  my_dev->read_ready = 1;
+	// wake up wait queue
+  wake_up_interruptible(&(my_dev->wait_queue));
+  return IRQ_HANDLED;
+}
+
+////
+// @name		fifo_release
+// @description Undoes open initialization by freeing the IRQ line and 
+//							unlocking the mutex
+// @param		inode - contains device information and cdev in inode->cdev
+// @param		filp - contains filp->private_data field for local data storage
+// @return	cannot fail
+////
+int fifo_release(struct inode *inode, struct file *filp){
+  
+#ifdef FIFO
+	printk("Write Total Cycles = %ld\n", fifo_tb_data[FIFO_WRITE_TOTAL]);
+	printk("Write U2K Cycles = %ld\n", fifo_tb_data[FIFO_U2K]);	
+	printk("Write MEM2ACC Cycles = %ld\n", fifo_tb_data[FIFO_MEM2ACC]);
+	printk("Read Total Cycles = %ld\n", fifo_tb_data[FIFO_READ_TOTAL]);
+	printk("Read Accel Exec Wait = %ld\n", fifo_tb_data[FIFO_ACCEL_EXEC]);
+	printk("Read ACC2MEM Cycles = %ld\n", fifo_tb_data[FIFO_ACC2MEM]);
+	printk("Read K2U Cycles = %ld\n", fifo_tb_data[FIFO_K2U]);
+#endif
+
+  struct fifo_dev *my_dev;
+	// get local data
+  my_dev = container_of(inode->i_cdev, struct fifo_dev, cdev);
+	// free IRQ if allocated
+  if(my_dev->virq != NO_IRQ)
+    free_irq(my_dev->virq, my_dev);
+	// unlock for next access
+  up(&(my_dev->file_lock));
+  return 0;
+}
+
+////
+// @name		fifo_remove
+// @description Called if driver is unregistered - no specific behavior
+// @param		dev - device structure
+// @return	cannot fail
+////
+static int fifo_remove(struct device *dev)
+{
+  printk("Removing a FIFO HW Unit\n");
+  return 0;
+  
+}
+
+////
+// @name		fifo_of_remove
+// @description Called if driver is unregistered - no specific behavior
+// @param		dev - device structure
+// @return	cannot fail
+//// 
+static int __devexit fifo_of_remove(struct of_device *dev)
+{
+  return fifo_remove(&dev->dev);
+}
+
+////
+// Device ID table:
+// Used to match devices to driver. Device analog specified in .DTS file
+////
+static struct of_device_id fifo_of_match[] = {
+  { .compatible = "xlnx,plb-memory-1.00.a", },
+  { .compatible = "xlnx,plb-loopback-int-2kw-1.00.a", },
+	{ .compatible = "xlnx,plb-no-int-1.00.a", },
+	{ .compatible = "xlnx,plb-loopback-2kw-1.00.a", },
+  { .compatible = "xlnx,multint-1.00.a", },
+  { .compatible = "xlnx,multpositive-1.00.a", },
+	{ .compatible = "xlnx,regint-1.00.a", },
+  { .compatible = "xlnx,blah-1.00.a", },
+  { .compatible = "xlnx,plb-fifo-1.00.a", },
+  { .compatible = "xlnx,plb-big-1.00.a", },
+	{ .compatible = "xlnx,math-1.00.a", },
+  { .compatible = "xlnx,plb-bwtest-1.00.a", },
+  { .compatible = "xlnx,plb-des-1.00.a", },
+  { .compatible = "xlnx,plb-matrix-1.00.a", },
+	{ .compatible = "xlnx,simple-partial-1.00.a", },
+  { .compatible = "xlnx,plb-loopback-1.00.a", },
+	{ .compatible = "xlnx,loopback-plb-1.00.a", },
+  { .compatible = "xlnx,plb-multiplier-1.00.a", },
+  { /* end of list */ },
+};
+
+// Register match table with device
+MODULE_DEVICE_TABLE(of, fifo_of_match);
+
+////
+// Driver specification structure:
+// Ties probe and remove functions to driver operation
+////
+static struct of_platform_driver fifo_of_driver = {
+  .owner        = THIS_MODULE,
+  .name		= DRIVER_NAME,
+  .match_table	= fifo_of_match,
+  .probe	= fifo_of_probe,
+  .remove	= __devexit_p(fifo_of_remove),
+  .driver       = {.name = DRIVER_NAME}
+};
+
+////
+// @name		fifo_of_register
+// @description Prints log messages upon initialization and registers platform
+//							driver.
+// @return	registration success
+//// 
+static inline int __init fifo_of_register(void)
+{
+  pr_debug("xilinxfb: calling of_register_platform_driver()\n");
+  printk("Registering a FIFO HW Unit\n");
+  return of_register_platform_driver(&fifo_of_driver);
+}
+
+////
+// @name		fifo_of_unregister
+// @description Prints message upon driver removal and unregisters platform
+//							driver.
+// @return	unregistration success
+//// 
+static inline void __exit fifo_of_unregister(void)
+{
+  printk("Unregistering my PLB FIFO HW Unit\n");
+  of_unregister_platform_driver(&fifo_of_driver);
+}
+
+////
+// @name		fifo_init
+// @description Calls registration function
+// @return	registration success
+//// 
+static int __init fifo_init(void)
+{
+  return fifo_of_register();
+  
+}
+
+////
+// @name		fifo_cleanup
+// @description Calls unregistration function
+// @return	unregistration success
+//// 
+static void __exit fifo_cleanup(void)
+{
+  return fifo_of_unregister();
+}
+
+////
+// @name		fifo_read
+// @description Read file operation behavior reading data from hardware 
+//							accelerater with interrupts if enabled.
+// @param		filp	- contains filp->private_data field for local data storage
+// @param   buf		- user space buffer to put read data into
+// @param   count - number of bytes to read
+// @param   f_pos - file position offset useful in other drivers but not this
+// @return	number of bytes read successfully
+////
+ssize_t fifo_read(struct file *filp, char *buf, 
+		  size_t count, loff_t *f_pos) {
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_READ_TOTAL] = get_tbl();
+	#endif
+
+  unsigned int i, data;
+
+  // get device-specific local data
+  struct fifo_dev *my_dev = filp->private_data;
+  
+  //count = min(count, 1024); //limit maximum buffer size to 1024
+
+  // allocate buffer to read the device 
+  unsigned * fifo_buffer = (unsigned *)kmalloc(count, GFP_KERNEL);
+
+  
+  // wait on data if IRQ allocated otherwise continue
+  if(my_dev->virq != NO_IRQ){
+		//wait on wait queue until read ready flag set)
+    if(wait_event_interruptible(my_dev->wait_queue, 
+			 my_dev->read_ready != 0) != 0){
+		  // if interrupt not handled, die gracefully
+      printk("Read wait interrupted by signal - dying...\n");
+      return -ERESTARTSYS;
+    }
+		// reset ready flag
+    my_dev->read_ready = 0;
+  }
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_ACCEL_EXEC] = get_tbl()-fifo_tb_data[FIFO_READ_TOTAL];
+	#endif
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_ACC2MEM] = get_tbl();
+	#endif
+
+  ioread32_rep(my_dev->rdfifo_data_addr, fifo_buffer, (count >> 2));
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_ACC2MEM] = get_tbl() - fifo_tb_data[FIFO_ACC2MEM];
+	#endif
+  
+	#ifdef FIFO
+			fifo_tb_data[FIFO_K2U] = get_tbl();
+	#endif
+
+  // Transfer data to user space and free kernel allocated memory
+  copy_to_user(buf,fifo_buffer,count); 
+  kfree(fifo_buffer);
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_K2U] = get_tbl() - fifo_tb_data[FIFO_K2U];
+	#endif
+  
+	#ifdef FIFO
+			fifo_tb_data[FIFO_READ_TOTAL] = get_tbl() - fifo_tb_data[FIFO_READ_TOTAL];
+	#endif
+  return count; 
+}
+
+////
+// @name		fifo_write
+// @description Write file operation behavior writing data to hardware 
+//							accelerator.
+// @param		filp	- contains filp->private_data field for local data storage
+// @param   buf		- user space buffer with data to write
+// @param   count - number of bytes to write
+// @param   f_pos - file position offset useful in other drivers but not this
+// @return	number of bytes written successfully
+////
+ssize_t fifo_write( struct file *filp, const char *buf, 
+		    size_t count, loff_t *f_pos) { 
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_WRITE_TOTAL] = get_tbl();
+	#endif
+
+  // Buffer to write from
+  unsigned * fifo_buffer;
+  unsigned int data, i;
+  
+  struct fifo_dev *my_dev = filp->private_data;
+
+  //count = min(count, 1024); //limit maximum buffer size to 1024
+	#ifdef FIFO
+			fifo_tb_data[FIFO_U2K] = get_tbl();
+	#endif
+  
+  fifo_buffer = (unsigned *)kmalloc(count, GFP_KERNEL);
+  
+  copy_from_user((void*)fifo_buffer, buf, count);
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_U2K] = get_tbl() - fifo_tb_data[FIFO_U2K];
+	#endif
+  
+	#ifdef FIFO
+			fifo_tb_data[FIFO_MEM2ACC] = get_tbl();
+	#endif
+
+  iowrite32_rep(my_dev->wrfifo_data_addr, fifo_buffer, (count >> 2) );
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_MEM2ACC] = get_tbl() - fifo_tb_data[FIFO_MEM2ACC];
+	#endif
+
+  // Free buffer
+  kfree(fifo_buffer);
+
+
+	#ifdef FIFO
+			fifo_tb_data[FIFO_WRITE_TOTAL] = get_tbl() - fifo_tb_data[FIFO_WRITE_TOTAL];
+	#endif
+  
+  return count; 
+}
+
+// register initialization and removal functions
+module_init(fifo_init);
+module_exit(fifo_cleanup);
+
+// Set driver parameters 
+MODULE_AUTHOR("Jeremy Espenshade");
+MODULE_DESCRIPTION(DRIVER_DESCRIPTION);
+MODULE_LICENSE("GPL");

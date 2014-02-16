@@ -1,0 +1,1 @@
+cmd_drivers/video/omap2/built-in.o :=  ppc_4xx-ld -m elf32ppc    -r -o drivers/video/omap2/built-in.o drivers/video/omap2/dss/built-in.o drivers/video/omap2/omapfb/built-in.o drivers/video/omap2/displays/built-in.o 

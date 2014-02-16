@@ -1,0 +1,1 @@
+cmd_arch/powerpc/boot/simpleImage.virtex440-compare := /bin/sh /tools/dev/repos/linux-2.6-xlnx/arch/powerpc/boot/wrapper -c -o arch/powerpc/boot/simpleImage.virtex440-compare -p simpleboot-virtex440-compare -C "ppc_4xx-"  -d arch/powerpc/boot/virtex440-compare.dtb vmlinux

@@ -1,0 +1,1 @@
+cmd_drivers/net/xilinx_lltemac/xilinx_temac.o := ppc_4xx-ld -m elf32ppc    -r -o drivers/net/xilinx_lltemac/xilinx_temac.o drivers/net/xilinx_lltemac/xlltemac_main.o drivers/net/xilinx_lltemac/xlltemac.o drivers/net/xilinx_lltemac/xlltemac_control.o 

@@ -1,0 +1,1 @@
+cmd_arch/powerpc/boot/simpleImage.virtex440-llaccel-done := /bin/sh /tools/dev/repos/linux-2.6-xlnx/arch/powerpc/boot/wrapper -c -o arch/powerpc/boot/simpleImage.virtex440-llaccel-done -p simpleboot-virtex440-llaccel-done -C "ppc_4xx-"  -d arch/powerpc/boot/virtex440-llaccel-done.dtb vmlinux
